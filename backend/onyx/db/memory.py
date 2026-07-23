@@ -2,7 +2,6 @@ from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
-from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -74,10 +73,7 @@ def get_memories(
 
     stmt = select(Memory).where(Memory.user_id == user.id)
     if persona_id is not None:
-        # Option 2: current persona's memories + legacy shared (NULL) rows
-        stmt = stmt.where(
-            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
-        )
+        stmt = stmt.where(Memory.persona_id == persona_id)
     stmt = stmt.order_by(Memory.id.asc())
 
     memory_rows = db_session.scalars(stmt).all()
@@ -99,14 +95,12 @@ def add_memory(
 ) -> Memory:
     """Insert a new Memory row for the given user, scoped to a persona.
 
-    If the user already has MAX_MEMORIES_PER_USER memories (for this persona
-    plus shared), the oldest one (lowest id) is deleted before inserting.
+    If the user already has MAX_MEMORIES_PER_USER memories for this persona,
+    the oldest one (lowest id) is deleted before inserting.
     """
     stmt = select(Memory).where(Memory.user_id == user_id)
     if persona_id is not None:
-        stmt = stmt.where(
-            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
-        )
+        stmt = stmt.where(Memory.persona_id == persona_id)
     stmt = stmt.order_by(Memory.id.asc())
     existing = db_session.scalars(stmt).all()
 
@@ -132,14 +126,12 @@ def update_memory_at_index(
 ) -> Memory | None:
     """Update the memory at the given 0-based index.
 
-    Index is relative to the persona-scoped view (current persona + shared),
-    matching what get_memories() returns and what the LLM sees.
+    Index is relative to the persona-scoped view, matching what
+    get_memories() returns and what the LLM sees.
     """
     stmt = select(Memory).where(Memory.user_id == user_id)
     if persona_id is not None:
-        stmt = stmt.where(
-            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
-        )
+        stmt = stmt.where(Memory.persona_id == persona_id)
     stmt = stmt.order_by(Memory.id.asc())
     memory_rows = db_session.scalars(stmt).all()
 

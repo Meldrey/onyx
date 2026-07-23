@@ -3,7 +3,6 @@ from uuid import UUID
 
 from sqlalchemy import Column
 from sqlalchemy import delete
-from sqlalchemy import or_
 from sqlalchemy import desc
 from sqlalchemy import select
 from sqlalchemy import update
@@ -250,13 +249,10 @@ def update_user_personalization(
     # ID-based upsert: use real DB IDs from the frontend to match memories.
     incoming_ids = {m.id for m in memories if m.id is not None}
 
-    # Scope existing memories query: if persona_id given, only manage
-    # that persona's rows + shared (NULL). Otherwise manage all.
+    # Scope existing memories query to this persona only
     stmt = select(Memory).where(Memory.user_id == user_id)
     if persona_id is not None:
-        stmt = stmt.where(
-            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
-        )
+        stmt = stmt.where(Memory.persona_id == persona_id)
     existing_memories = list(db_session.scalars(stmt).all())
 
     existing_ids = {mem.id for mem in existing_memories}
@@ -299,9 +295,7 @@ def get_memories_for_user(
 ) -> Sequence[Memory]:
     stmt = select(Memory).where(Memory.user_id == user_id)
     if persona_id is not None:
-        stmt = stmt.where(
-            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
-        )
+        stmt = stmt.where(Memory.persona_id == persona_id)
     return db_session.scalars(stmt.order_by(Memory.id.desc())).all()
 
 
