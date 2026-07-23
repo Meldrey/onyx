@@ -510,23 +510,11 @@ class LitellmLLM(LLM):
                 # contains tool-calling assistant messages.  LiteLLM's
                 # modify_params workaround doesn't cover all providers
                 # (notably Bedrock).
-                can_enable_thinking = (
-                    budget_tokens is not None
-                    and not _prompt_contains_tool_call_history(prompt)
-                )
+                can_enable_thinking = not _prompt_contains_tool_call_history(prompt)
 
                 if can_enable_thinking:
-                    assert budget_tokens is not None  # mypy
-                    if max_tokens is not None:
-                        # Anthropic has a weird rule where max token has to be at least as much as budget tokens if set
-                        # and the minimum budget tokens is 1024
-                        # Will note that overwriting a developer set max tokens is not ideal but is the best we can do for now
-                        # It is better to allow the LLM to output more reasoning tokens even if it results in a fairly small tool
-                        # call as compared to reducing the budget for reasoning.
-                        max_tokens = max(budget_tokens + 1, max_tokens)
                     optional_kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": budget_tokens,
+                        "type": "adaptive",
                     }
 
                 # LiteLLM just does some mapping like this anyway but is incomplete for Anthropic
