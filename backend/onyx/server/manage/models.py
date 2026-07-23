@@ -97,6 +97,7 @@ class UserPreferences(BaseModel):
 class MemoryItem(BaseModel):
     id: int | None = None
     content: str
+    persona_id: int | None = None
 
 
 class UserPersonalization(BaseModel):
@@ -259,6 +260,7 @@ class PersonalizationUpdateRequest(BaseModel):
     enable_memory_tool: bool | None = None
     memories: list[MemoryItem] | None = None
     user_preferences: str | None = Field(default=None, max_length=500)
+    persona_id: int | None = None
 
     @field_validator("memories", mode="before")
     @classmethod

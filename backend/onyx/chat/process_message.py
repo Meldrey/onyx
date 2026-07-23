@@ -723,7 +723,7 @@ def build_chat_turn(
     # Compute skip-clarification flag for deep research path (cheap, always available)
     skip_clarification = is_last_assistant_message_clarification(chat_history)
 
-    user_memory_context = get_memories(user, db_session)
+    user_memory_context = get_memories(user, db_session, persona_id=persona.id)
 
     # This prompt may come from the Agent or Project. Fetched here (before run_llm_loop)
     # because the inner loop shouldn't need to access the DB-form chat history, but we

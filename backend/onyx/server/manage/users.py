@@ -835,7 +835,7 @@ def verify_user_logged_in(
         ),
     )
     memories = [
-        MemoryItem(id=memory.id, content=memory.memory_text)
+        MemoryItem(id=memory.id, content=memory.memory_text, persona_id=memory.persona_id)
         for memory in get_memories_for_user(user.id, db_session)
     ]
 
@@ -947,7 +947,7 @@ def update_user_personalization_api(
         else user.enable_memory_tool
     )
     existing_memories = [
-        MemoryItem(id=memory.id, content=memory.memory_text)
+        MemoryItem(id=memory.id, content=memory.memory_text, persona_id=memory.persona_id)
         for memory in get_memories_for_user(user.id, db_session)
     ]
     new_memories = (
@@ -968,6 +968,7 @@ def update_user_personalization_api(
         memories=new_memories,
         user_preferences=new_user_preferences,
         db_session=db_session,
+        persona_id=request.persona_id,
     )
 
 

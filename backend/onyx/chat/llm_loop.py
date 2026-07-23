@@ -1039,6 +1039,7 @@ def run_llm_loop(
                                 index=tool_response.rich_response.index_to_replace,
                                 new_text=tool_response.rich_response.memory_text,
                                 db_session=db_session,
+                                persona_id=persona.id if persona else None,
                             )
                             persisted_memory_id = memory.id if memory else None
                         else:
@@ -1046,6 +1047,7 @@ def run_llm_loop(
                                 user_id=user_memory_context.user_id,
                                 memory_text=tool_response.rich_response.memory_text,
                                 db_session=db_session,
+                                persona_id=persona.id if persona else None,
                             )
                             persisted_memory_id = memory.id
                     operation: Literal["add", "update"] = (

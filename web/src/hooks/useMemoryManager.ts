@@ -5,6 +5,7 @@ export interface LocalMemory {
   id: number;
   content: string;
   isNew: boolean;
+  persona_id: number | null;
 }
 
 export const MAX_MEMORY_LENGTH = 200;
@@ -32,6 +33,7 @@ export function useMemoryManager({
       id: mem.id ?? -(index + 1),
       content: mem.content,
       isNew: mem.id === null,
+      persona_id: mem.persona_id ?? null,
     }));
 
     setLocalMemories((prev) => {
@@ -66,7 +68,7 @@ export function useMemoryManager({
     if (unsavedNewItem && !isSavingRef.current) {
       const newMemories: MemoryItem[] = localMemories
         .filter((m) => m.content.trim())
-        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content }));
+        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content, persona_id: m.persona_id }));
 
       const memoriesChanged =
         JSON.stringify(newMemories) !==
@@ -88,7 +90,7 @@ export function useMemoryManager({
 
     const newId = Date.now();
     setLocalMemories((prev) => [
-      { id: newId, content: "", isNew: true },
+      { id: newId, content: "", isNew: true, persona_id: null },
       ...prev,
     ]);
     return newId;
@@ -115,7 +117,7 @@ export function useMemoryManager({
       const newMemories: MemoryItem[] = localMemories
         .filter((_, i) => i !== index)
         .filter((m) => !m.isNew || m.content.trim())
-        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content }));
+        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content, persona_id: m.persona_id }));
 
       const success = await onSaveMemories(newMemories);
       if (success) {
@@ -135,7 +137,7 @@ export function useMemoryManager({
 
       const newMemories: MemoryItem[] = localMemories
         .filter((m) => m.content.trim())
-        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content }));
+        .map((m) => ({ id: m.isNew ? null : m.id, content: m.content, persona_id: m.persona_id }));
 
       const memoriesChanged =
         JSON.stringify(newMemories) !==

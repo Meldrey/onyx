@@ -458,6 +458,9 @@ class Memory(Base):
     user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False
     )
+    persona_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("persona.id", ondelete="SET NULL"), nullable=True
+    )
     memory_text: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
@@ -474,6 +477,10 @@ class Memory(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="memories")
+
+    __table_args__ = (
+        Index("ix_memory_user_persona", "user_id", "persona_id"),
+    )
 
 
 class ApiKey(Base):

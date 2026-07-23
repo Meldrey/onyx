@@ -163,7 +163,7 @@ export default function useUserPersonalization(
   const addMemory = useCallback(() => {
     setPersonalizationValues((prev) => ({
       ...prev,
-      memories: [...prev.memories, { id: null, content: "" }],
+      memories: [...prev.memories, { id: null, content: "", persona_id: null }],
     }));
   }, []);
 

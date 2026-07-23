@@ -2,6 +2,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -56,7 +57,11 @@ class UserMemoryContext(BaseModel):
         return result
 
 
-def get_memories(user: User, db_session: Session) -> UserMemoryContext:
+def get_memories(
+    user: User,
+    db_session: Session,
+    persona_id: int | None = None,
+) -> UserMemoryContext:
     user_info = UserInfo(
         name=user.personal_name,
         role=user.personal_role,
@@ -67,9 +72,15 @@ def get_memories(user: User, db_session: Session) -> UserMemoryContext:
     if user.user_preferences:
         user_preferences = user.user_preferences
 
-    memory_rows = db_session.scalars(
-        select(Memory).where(Memory.user_id == user.id).order_by(Memory.id.asc())
-    ).all()
+    stmt = select(Memory).where(Memory.user_id == user.id)
+    if persona_id is not None:
+        # Option 2: current persona's memories + legacy shared (NULL) rows
+        stmt = stmt.where(
+            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
+        )
+    stmt = stmt.order_by(Memory.id.asc())
+
+    memory_rows = db_session.scalars(stmt).all()
     memories = tuple(memory.memory_text for memory in memory_rows if memory.memory_text)
 
     return UserMemoryContext(
@@ -84,21 +95,27 @@ def add_memory(
     user_id: UUID,
     memory_text: str,
     db_session: Session,
+    persona_id: int | None = None,
 ) -> Memory:
-    """Insert a new Memory row for the given user.
+    """Insert a new Memory row for the given user, scoped to a persona.
 
-    If the user already has MAX_MEMORIES_PER_USER memories, the oldest
-    one (lowest id) is deleted before inserting the new one.
+    If the user already has MAX_MEMORIES_PER_USER memories (for this persona
+    plus shared), the oldest one (lowest id) is deleted before inserting.
     """
-    existing = db_session.scalars(
-        select(Memory).where(Memory.user_id == user_id).order_by(Memory.id.asc())
-    ).all()
+    stmt = select(Memory).where(Memory.user_id == user_id)
+    if persona_id is not None:
+        stmt = stmt.where(
+            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
+        )
+    stmt = stmt.order_by(Memory.id.asc())
+    existing = db_session.scalars(stmt).all()
 
     if len(existing) >= MAX_MEMORIES_PER_USER:
         db_session.delete(existing[0])
 
     memory = Memory(
         user_id=user_id,
+        persona_id=persona_id,
         memory_text=memory_text,
     )
     db_session.add(memory)
@@ -111,14 +128,20 @@ def update_memory_at_index(
     index: int,
     new_text: str,
     db_session: Session,
+    persona_id: int | None = None,
 ) -> Memory | None:
-    """Update the memory at the given 0-based index (ordered by id ASC, matching get_memories()).
+    """Update the memory at the given 0-based index.
 
-    Returns the updated Memory row, or None if the index is out of range.
+    Index is relative to the persona-scoped view (current persona + shared),
+    matching what get_memories() returns and what the LLM sees.
     """
-    memory_rows = db_session.scalars(
-        select(Memory).where(Memory.user_id == user_id).order_by(Memory.id.asc())
-    ).all()
+    stmt = select(Memory).where(Memory.user_id == user_id)
+    if persona_id is not None:
+        stmt = stmt.where(
+            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
+        )
+    stmt = stmt.order_by(Memory.id.asc())
+    memory_rows = db_session.scalars(stmt).all()
 
     if index < 0 or index >= len(memory_rows):
         return None

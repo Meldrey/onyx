@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import Column
 from sqlalchemy import delete
+from sqlalchemy import or_
 from sqlalchemy import desc
 from sqlalchemy import select
 from sqlalchemy import update
@@ -232,6 +233,7 @@ def update_user_personalization(
     memories: list[MemoryItem],
     user_preferences: str | None,
     db_session: Session,
+    persona_id: int | None = None,
 ) -> None:
     db_session.execute(
         update(User)
@@ -248,10 +250,15 @@ def update_user_personalization(
     # ID-based upsert: use real DB IDs from the frontend to match memories.
     incoming_ids = {m.id for m in memories if m.id is not None}
 
-    # Delete existing rows not in the incoming set (scoped to user_id)
-    existing_memories = list(
-        db_session.scalars(select(Memory).where(Memory.user_id == user_id)).all()
-    )
+    # Scope existing memories query: if persona_id given, only manage
+    # that persona's rows + shared (NULL). Otherwise manage all.
+    stmt = select(Memory).where(Memory.user_id == user_id)
+    if persona_id is not None:
+        stmt = stmt.where(
+            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
+        )
+    existing_memories = list(db_session.scalars(stmt).all())
+
     existing_ids = {mem.id for mem in existing_memories}
     ids_to_delete = existing_ids - incoming_ids
     if ids_to_delete:
@@ -268,11 +275,18 @@ def update_user_personalization(
         if item.id is not None and item.id in existing_by_id:
             existing_by_id[item.id].memory_text = item.content
 
-    # Create new rows for items without an ID
+    # Create new rows for items without an ID — stamp persona_id
     new_items = [m for m in memories if m.id is None]
     if new_items:
         db_session.add_all(
-            [Memory(user_id=user_id, memory_text=item.content) for item in new_items]
+            [
+                Memory(
+                    user_id=user_id,
+                    persona_id=getattr(item, "persona_id", None) or persona_id,
+                    memory_text=item.content,
+                )
+                for item in new_items
+            ]
         )
 
     db_session.commit()
@@ -281,10 +295,14 @@ def update_user_personalization(
 def get_memories_for_user(
     user_id: UUID,
     db_session: Session,
+    persona_id: int | None = None,
 ) -> Sequence[Memory]:
-    return db_session.scalars(
-        select(Memory).where(Memory.user_id == user_id).order_by(Memory.id.desc())
-    ).all()
+    stmt = select(Memory).where(Memory.user_id == user_id)
+    if persona_id is not None:
+        stmt = stmt.where(
+            or_(Memory.persona_id == persona_id, Memory.persona_id.is_(None))
+        )
+    return db_session.scalars(stmt.order_by(Memory.id.desc())).all()
 
 
 def update_user_pinned_assistants(

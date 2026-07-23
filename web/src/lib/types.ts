@@ -41,6 +41,7 @@ interface UserPreferences {
 export interface MemoryItem {
   id: number | null;
   content: string;
+  persona_id: number | null;
 }
 
 export interface UserPersonalization {
