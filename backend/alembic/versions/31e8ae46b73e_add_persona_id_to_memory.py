@@ -32,12 +32,10 @@ def upgrade() -> None:
         ["user_id", "persona_id"],
     )
 
-    # --- Data migration: backfill persona_id from conversation history ---
-    # Join memory → chat_session via conversation_id to resolve which persona
-    # each memory belongs to. Memories without a resolvable persona are deleted.
+    # --- Data migration: assign existing memories to personas ---
     conn = op.get_bind()
 
-    # Backfill persona_id where conversation_id maps to a chat_session
+    # Step 1: Backfill from conversation_id where possible
     conn.execute(
         sa.text("""
             UPDATE memory
@@ -49,16 +47,63 @@ def upgrade() -> None:
         """)
     )
 
-    # Delete orphaned memories that couldn't be assigned to a persona:
-    # - no conversation_id (manually created with no provenance)
-    # - conversation_id doesn't match any chat_session
-    # - chat_session has no persona_id
-    conn.execute(
-        sa.text("""
-            DELETE FROM memory
-            WHERE persona_id IS NULL
-        """)
-    )
+    # Step 2: Manual assignments for memories without conversation_id
+    # Brick (persona_id=2): themusetechmusic brand, Nviroclean YouTube
+    conn.execute(sa.text(
+        "UPDATE memory SET persona_id = 2 WHERE id IN (11, 12) AND persona_id IS NULL"
+    ))
+
+    # Haugen (persona_id=5): MOOD:ME website work
+    conn.execute(sa.text(
+        "UPDATE memory SET persona_id = 5 WHERE id IN (13, 14, 15, 16, 17) AND persona_id IS NULL"
+    ))
+
+    # Step 3: Duplicate shared memories to all 3 agents
+    # Memory 18 (accessibility) and 19 (Nviroclean spelling) → Brick, Haugen, Saltman
+    for mem_id in (18, 19):
+        row = conn.execute(
+            sa.text("SELECT user_id, memory_text FROM memory WHERE id = :id"),
+            {"id": mem_id},
+        ).fetchone()
+        if row:
+            user_id, text = row[0], row[1]
+            # Assign original to Brick
+            conn.execute(sa.text(
+                "UPDATE memory SET persona_id = 2 WHERE id = :id"
+            ), {"id": mem_id})
+            # Create copies for Haugen and Saltman
+            for pid in (5, 6):
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO memory (user_id, persona_id, memory_text) "
+                        "VALUES (:uid, :pid, :txt)"
+                    ),
+                    {"uid": str(user_id), "pid": pid, "txt": text},
+                )
+
+    # Memory 20 (weekly summaries) → duplicate to Brick and Haugen
+    row = conn.execute(
+        sa.text("SELECT user_id, memory_text FROM memory WHERE id = 20"),
+    ).fetchone()
+    if row:
+        user_id, text = row[0], row[1]
+        # Assign original to Brick
+        conn.execute(sa.text(
+            "UPDATE memory SET persona_id = 2 WHERE id = 20"
+        ))
+        # Copy for Haugen
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory (user_id, persona_id, memory_text) "
+                "VALUES (:uid, 5, :txt)"
+            ),
+            {"uid": str(user_id), "txt": text},
+        )
+
+    # Step 4: Delete Meldrey's diagnostic memories and any remaining orphans
+    conn.execute(sa.text(
+        "DELETE FROM memory WHERE persona_id IS NULL"
+    ))
 
 
 def downgrade() -> None:
