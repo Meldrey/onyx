@@ -117,6 +117,8 @@ class ChatMessageSimple(BaseModel):
     message_type: MessageType
     # Only for USER type messages
     image_files: list[ChatLoadedFile] | None = None
+    # PDF files to send as native document blocks (bypasses text extraction)
+    document_files: list[ChatLoadedFile] | None = None
     # Only for TOOL_CALL_RESPONSE type messages
     tool_call_id: str | None = None
     # For ASSISTANT messages with tool calls (OpenAI parallel tool calling format)

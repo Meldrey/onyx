@@ -556,6 +556,14 @@ def _build_tool_call_response_history_message(
     return TOOL_CALL_RESPONSE_CROSS_MESSAGE
 
 
+def _is_pdf_file(file: ChatLoadedFile) -> bool:
+    """Check if a loaded file is a PDF that should be sent as a native document block."""
+    if file.filename and file.filename.lower().endswith(".pdf"):
+        return True
+    # Fall back to magic-byte detection
+    return len(file.content) >= 5 and file.content[:5] == b"%PDF-"
+
+
 def convert_chat_history(
     chat_history: list[ChatMessage],
     files: list[ChatLoadedFile],
@@ -595,6 +603,7 @@ def convert_chat_history(
             # Process files attached to this message
             text_files: list[tuple[ChatLoadedFile, FileDescriptor]] = []
             image_files: list[ChatLoadedFile] = []
+            document_files: list[ChatLoadedFile] = []
 
             if chat_message.files:
                 for file_descriptor in chat_message.files:
@@ -603,6 +612,12 @@ def convert_chat_history(
                     if loaded_file:
                         if loaded_file.file_type == ChatFileType.IMAGE:
                             image_files.append(loaded_file)
+                        elif _is_pdf_file(loaded_file):
+                            # PDFs are sent as native document blocks to
+                            # providers that support them (e.g. Anthropic).
+                            # The LLM message builder handles the fallback
+                            # to extracted text for other providers.
+                            document_files.append(loaded_file)
                         else:
                             # Text files (DOC, PLAIN_TEXT, TABULAR) are added as separate messages
                             text_files.append((loaded_file, file_descriptor))
@@ -625,12 +640,17 @@ def convert_chat_history(
                 simple_messages.append(ctx.message)
                 all_injected_file_metadata[tool_id] = ctx.tool_metadata
 
-            # Sum token counts from image files (excluding project image files)
+            # Sum token counts from image and document files
             image_token_count = (
                 sum(img.token_count for img in image_files) if image_files else 0
             )
+            doc_token_count = (
+                sum(doc.token_count for doc in document_files)
+                if document_files
+                else 0
+            )
 
-            # Add the user message with image files attached
+            # Add the user message with image/document files attached
             # If this is the last USER message, also include context_image_files
             # Note: context image file tokens are NOT counted in the token count
             if idx == last_user_message_idx:
@@ -652,9 +672,12 @@ def convert_chat_history(
             simple_messages.append(
                 ChatMessageSimple(
                     message=chat_message.message,
-                    token_count=chat_message.token_count + image_token_count,
+                    token_count=chat_message.token_count
+                    + image_token_count
+                    + doc_token_count,
                     message_type=MessageType.USER,
                     image_files=image_files if image_files else None,
+                    document_files=document_files if document_files else None,
                 )
             )
 

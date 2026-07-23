@@ -1456,17 +1456,18 @@ def _upsert_mcp_server(
 
     elif request.auth_performer == MCPAuthenticationPerformer.PER_USER:
         if request.auth_type == MCPAuthenticationType.API_TOKEN:
-            # handled by model validation, this is just for mypy
-            assert request.auth_template and request.admin_credentials
+            # auth_template required; admin_credentials optional for literal headers
+            assert request.auth_template
 
             # Per-user server: create template and save creator's per-user config
             template_data = request.auth_template
+            credentials = request.admin_credentials or {}
 
             # Create template config: faithful representation of what's in the admin panel
             template_config = create_connection_config(
                 config_data=MCPConnectionData(
                     headers=template_data.headers,
-                    header_substitutions=request.admin_credentials,
+                    header_substitutions=credentials,
                 ),
                 mcp_server_id=mcp_server.id,
                 user_email="",
@@ -1477,9 +1478,9 @@ def _upsert_mcp_server(
             user_config = create_connection_config(
                 config_data=MCPConnectionData(
                     headers=_build_headers_from_template(
-                        template_data, request.admin_credentials, user.email
+                        template_data, credentials, user.email
                     ),
-                    header_substitutions=request.admin_credentials,
+                    header_substitutions=credentials,
                 ),
                 mcp_server_id=mcp_server.id,
                 user_email=user.email,

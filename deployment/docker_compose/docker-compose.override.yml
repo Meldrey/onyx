@@ -1,0 +1,101 @@
+# Johnny5 overrides for Onyx
+# - OpenSearch enabled (full vector pipeline for web crawler + document indexing)
+# - Model servers enabled (local HuggingFace embedding/inference)
+# - Disable code-interpreter (docker.sock as root = host compromise risk)
+# - Disable MinIO (using postgres file storage instead)
+# Ports are controlled via .env: HOST_PORT_80=8026, HOST_PORT=8027
+name: onyx
+
+services:
+  code-interpreter:
+    profiles: ["disabled"]
+
+  minio:
+    profiles: ["disabled"]
+
+  # Fix depends_on for disabled services + mount Home Lab CA for internal TLS
+  api_server:
+    volumes:
+      - api_server_logs:/var/log/onyx
+      - file-system:/app/file-system
+      - /usr/local/share/ca-certificates/home-lab-ca.crt:/usr/local/share/ca-certificates/home-lab-ca.crt:ro
+      # MCP tool result fix — structuredContent + double-serialization + history replay
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_implementations/mcp/mcp_client.py:/app/onyx/tools/tool_implementations/mcp/mcp_client.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_implementations/mcp/mcp_tool.py:/app/onyx/tools/tool_implementations/mcp/mcp_tool.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/chat_utils.py:/app/onyx/chat/chat_utils.py:ro
+      # MCP auth template fix — allow literal headers without admin_credentials
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/server/features/mcp/models.py:/app/onyx/server/features/mcp/models.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/server/features/mcp/api.py:/app/onyx/server/features/mcp/api.py:ro
+      # Image size guard — resize oversized images before base64 encoding
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/image_utils.py:/app/onyx/chat/image_utils.py:ro
+      # GIF support — add image/gif to accepted types
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/file_processing/file_types.py:/app/onyx/file_processing/file_types.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/llm_step.py:/app/onyx/chat/llm_step.py:ro
+      # Per-agent + per-user MCP identity headers + onyx-file:// resolution
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_constructor.py:/app/onyx/tools/tool_constructor.py:ro
+      # Native PDF document blocks — send PDFs as base64 to Claude instead of text extraction
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/llm/models.py:/app/onyx/llm/models.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/models.py:/app/onyx/chat/models.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/llm_loop.py:/app/onyx/chat/llm_loop.py:ro
+    environment:
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - "host.docker.internal:host-gateway"
+      - "n8n.home.lan:192.168.4.21"
+    command: >
+      /bin/sh -c "cat /usr/local/share/ca-certificates/home-lab-ca.crt >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null;
+      cat /usr/local/share/ca-certificates/home-lab-ca.crt >> $(python3 -c 'import certifi; print(certifi.where())') 2>/dev/null;
+      alembic upgrade head &&
+      echo \"Starting Onyx Api Server\" &&
+      uvicorn onyx.main:app --host 0.0.0.0 --port 8080"
+    depends_on:
+      relational_db:
+        condition: service_started
+      index:
+        condition: service_started
+      cache:
+        condition: service_started
+      inference_model_server:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+      minio:
+        condition: service_started
+        required: false
+
+  background:
+    volumes:
+      - background_logs:/var/log/onyx
+      - file-system:/app/file-system
+      # MCP tool result fix
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_implementations/mcp/mcp_client.py:/app/onyx/tools/tool_implementations/mcp/mcp_client.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_implementations/mcp/mcp_tool.py:/app/onyx/tools/tool_implementations/mcp/mcp_tool.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/chat_utils.py:/app/onyx/chat/chat_utils.py:ro
+      # Per-agent + per-user MCP identity headers
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/tools/tool_constructor.py:/app/onyx/tools/tool_constructor.py:ro
+      # Image size guard — resize oversized images before base64 encoding
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/image_utils.py:/app/onyx/chat/image_utils.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/llm_step.py:/app/onyx/chat/llm_step.py:ro
+      # Native PDF document blocks
+      # GIF support
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/file_processing/file_types.py:/app/onyx/file_processing/file_types.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/llm/models.py:/app/onyx/llm/models.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/models.py:/app/onyx/chat/models.py:ro
+      - /home/meldrey/Projects/PRJ-onyx/onyx-src/backend/onyx/chat/llm_loop.py:/app/onyx/chat/llm_loop.py:ro
+    depends_on:
+      relational_db:
+        condition: service_started
+      index:
+        condition: service_started
+      cache:
+        condition: service_started
+      inference_model_server:
+        condition: service_healthy
+      indexing_model_server:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+
+  nginx:
+    volumes:
+      # Token Usage Dashboard — custom nginx config with /my_usage location
+      - /home/meldrey/Projects/PRJ-onyx/onyx-usage/app.conf.patched:/etc/nginx/conf.d/app.conf:ro

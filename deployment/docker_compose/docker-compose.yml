@@ -45,7 +45,12 @@ services:
       args:
         - ENABLE_CRAFT=${ENABLE_CRAFT:-false}
     command: >
-      /bin/sh -c "alembic upgrade head &&
+      /bin/sh -c "
+      if [ -f /etc/ssl/certs/custom-ca.crt ]; then
+        cp /etc/ssl/certs/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt;
+        update-ca-certificates;
+      fi &&
+      alembic upgrade head &&
       echo \"Starting Onyx Api Server\" &&
       uvicorn onyx.main:app --host 0.0.0.0 --port 8080"
     # Check env.template and copy to .env for env vars
@@ -95,6 +100,7 @@ services:
       - VENV_TEMPLATE_PATH=${VENV_TEMPLATE_PATH:-/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/venv}
       - WEB_TEMPLATE_PATH=${WEB_TEMPLATE_PATH:-/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/outputs/web}
       - PERSISTENT_DOCUMENT_STORAGE_PATH=${PERSISTENT_DOCUMENT_STORAGE_PATH:-/app/file-system}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     # PRODUCTION: Uncomment the line below to use if IAM_AUTH is true and you are using iam auth for postgres
     # volumes:
     #   - ./bundle.pem:/app/bundle.pem:ro
@@ -122,6 +128,7 @@ services:
       - api_server_logs:/var/log/onyx
       # Shared volume for persistent document storage (Craft file-system mode)
       - file-system:/app/file-system
+      - ./custom-ca.crt:/etc/ssl/certs/custom-ca.crt:ro
 
   background:
     image: ${ONYX_BACKEND_IMAGE:-onyxdotapp/onyx-backend:${IMAGE_TAG:-latest}}
@@ -136,6 +143,7 @@ services:
         /app/scripts/setup_craft_templates.sh;
       fi &&
       if [ -f /etc/ssl/certs/custom-ca.crt ]; then
+        cp /etc/ssl/certs/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt;
         update-ca-certificates;
       fi &&
       /app/scripts/supervisord_entrypoint.sh"
@@ -181,6 +189,7 @@ services:
       - VENV_TEMPLATE_PATH=${VENV_TEMPLATE_PATH:-/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/venv}
       - WEB_TEMPLATE_PATH=${WEB_TEMPLATE_PATH:-/app/onyx/server/features/build/sandbox/kubernetes/docker/templates/outputs/web}
       - PERSISTENT_DOCUMENT_STORAGE_PATH=${PERSISTENT_DOCUMENT_STORAGE_PATH:-/app/file-system}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     # PRODUCTION: Uncomment the line below to use if IAM_AUTH is true and you are using iam auth for postgres
     # volumes:
     #   - ./bundle.pem:/app/bundle.pem:ro
@@ -191,6 +200,7 @@ services:
       - background_logs:/var/log/onyx
       # Shared volume for persistent document storage (Craft file-system mode)
       - file-system:/app/file-system
+      - ./custom-ca.crt:/etc/ssl/certs/custom-ca.crt:ro
     logging:
       driver: json-file
       options:

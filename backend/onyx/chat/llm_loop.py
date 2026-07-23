@@ -15,6 +15,7 @@ from onyx.chat.citation_utils import update_citation_processor_from_tool_respons
 from onyx.chat.emitter import Emitter
 from onyx.chat.llm_step import extract_tool_calls_from_response_text
 from onyx.chat.llm_step import run_llm_step
+from onyx.chat.models import ChatLoadedFile
 from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import ContextFileMetadata
 from onyx.chat.models import ExtractedContextFiles
@@ -24,6 +25,7 @@ from onyx.chat.models import ToolCallSimple
 from onyx.chat.prompt_utils import build_reminder_message
 from onyx.chat.prompt_utils import build_system_prompt
 from onyx.chat.prompt_utils import (
+    _build_user_information_section,
     get_default_base_system_prompt,
 )
 from onyx.configs.app_configs import INTEGRATION_TESTS_MODE
@@ -494,6 +496,7 @@ def construct_message_history(
             token_count=last_user_message.token_count,
             message_type=last_user_message.message_type,
             image_files=existing_images + context_files.image_files,
+            document_files=last_user_message.document_files,
         )
 
     # Build the final message list according to README ordering:
@@ -741,13 +744,23 @@ def run_llm_loop(
             # now that project files are loaded in.
             if persona and persona.replace_base_system_prompt:
                 # Handles the case where user has checked off the "Replace base system prompt" checkbox
+                # Append user identity info so custom agents know who they're talking to
+                persona_prompt_str = persona.system_prompt or ""
+                if persona_prompt_str and user_memory_context:
+                    from onyx.prompts.prompt_utils import get_company_context
+                    company_context = get_company_context()
+                    user_info_section = _build_user_information_section(
+                        user_memory_context, company_context
+                    )
+                    if user_info_section:
+                        persona_prompt_str += user_info_section
                 system_prompt = (
                     ChatMessageSimple(
-                        message=persona.system_prompt,
-                        token_count=token_counter(persona.system_prompt),
+                        message=persona_prompt_str,
+                        token_count=token_counter(persona_prompt_str),
                         message_type=MessageType.SYSTEM,
                     )
-                    if persona.system_prompt
+                    if persona_prompt_str
                     else None
                 )
                 custom_agent_prompt_msg = None
@@ -943,6 +956,7 @@ def run_llm_loop(
                 simple_chat_history.extend(failure_messages)
                 continue
 
+            _thumbnail_map = {}  # tool_call_id -> list[base64_str]
             for tool_response in tool_responses:
                 # Extract tool_call from the response (set by run_tool_calls)
                 if tool_response.tool_call is None:
@@ -1049,9 +1063,20 @@ def run_llm_loop(
                 if memory_snapshot:
                     saved_response = json.dumps(memory_snapshot.model_dump())
                 elif isinstance(tool_response.rich_response, CustomToolCallSummary):
-                    saved_response = json.dumps(
-                        tool_response.rich_response.model_dump()
-                    )
+                    # Extract _thumbnails for image_files, then strip from saved text
+                    dump = tool_response.rich_response.model_dump()
+                    tr = dump.get("tool_result")
+                    _extracted = None
+                    if isinstance(tr, dict):
+                        _extracted = tr.pop("_thumbnails", None)
+                    elif isinstance(tr, list):
+                        for item in tr:
+                            if isinstance(item, dict):
+                                _extracted = item.pop("_thumbnails", None)
+                    if _extracted and tool_call.tool_call_id:
+                        logger.info("[THUMB] Extracted %d thumbnails for tool_call %s", len(_extracted), tool_call.tool_call_id)
+                        _thumbnail_map[tool_call.tool_call_id] = _extracted
+                    saved_response = json.dumps(dump)
                 elif isinstance(tool_response.rich_response, str):
                     saved_response = tool_response.rich_response
                 else:
@@ -1128,12 +1153,45 @@ def run_llm_loop(
                     tool_response_message = tool_response.llm_facing_response
                     tool_response_token_count = token_counter(tool_response_message)
 
+                    # Extract thumbnail images from MCP tool results if present
+                    tool_image_files = None
+                    if isinstance(tool_response.rich_response, CustomToolCallSummary) and tc.tool_call_id in _thumbnail_map:
+                        logger.info("[THUMB] Attaching %d thumbnails to tool_call %s", len(_thumbnail_map[tc.tool_call_id]), tc.tool_call_id)
+                        import base64 as b64mod
+                        import uuid
+                        from onyx.file_store.models import ChatFileType
+                        tool_image_files = []
+                        for thumb_b64 in _thumbnail_map[tc.tool_call_id]:
+                            try:
+                                img_bytes = b64mod.b64decode(thumb_b64)
+                                tool_image_files.append(ChatLoadedFile(
+                                    file_id=str(uuid.uuid4()),
+                                    content=img_bytes,
+                                    file_type=ChatFileType.IMAGE,
+                                    filename="thumbnail.jpg",
+                                    content_text=None,
+                                    token_count=0,
+                                ))
+                            except Exception as _thumb_err:
+                                logger.warning("[THUMB] Failed to create ChatLoadedFile: %s", _thumb_err)
+                        # Rebuild llm_facing_response without _thumbnails
+                        # Pop from live object too (dump already cleaned for saved_response)
+                        live_tr = tool_response.rich_response.tool_result
+                        if isinstance(live_tr, dict):
+                            live_tr.pop("_thumbnails", None)
+                        elif isinstance(live_tr, list):
+                            for lt_item in live_tr:
+                                if isinstance(lt_item, dict):
+                                    lt_item.pop("_thumbnails", None)
+                        tool_response_message = json.dumps(live_tr)
+                        tool_response_token_count = token_counter(tool_response_message)
+
                     tool_response_msg = ChatMessageSimple(
                         message=tool_response_message,
                         token_count=tool_response_token_count,
                         message_type=MessageType.TOOL_CALL_RESPONSE,
                         tool_call_id=tc.tool_call_id,
-                        image_files=None,
+                        image_files=tool_image_files,
                     )
                     simple_chat_history.append(tool_response_msg)
 

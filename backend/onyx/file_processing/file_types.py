@@ -13,7 +13,7 @@ PLAIN_TEXT_MIME_TYPE = "text/plain"
 
 
 class OnyxMimeTypes:
-    IMAGE_MIME_TYPES = {"image/jpg", "image/jpeg", "image/png", "image/webp"}
+    IMAGE_MIME_TYPES = {"image/jpg", "image/jpeg", "image/png", "image/webp", "image/gif"}
     CSV_MIME_TYPES = {"text/csv"}
     TABULAR_MIME_TYPES = CSV_MIME_TYPES | {SPREADSHEET_MIME_TYPE}
     TEXT_MIME_TYPES = {
@@ -46,7 +46,6 @@ class OnyxMimeTypes:
     EXCLUDED_IMAGE_TYPES = {
         "image/bmp",
         "image/tiff",
-        "image/gif",
         "image/svg+xml",
         "image/avif",
     }
@@ -86,6 +85,7 @@ class OnyxFileExtensions:
         ".jpg",
         ".jpeg",
         ".webp",
+        ".gif",
     }
 
     TEXT_AND_DOCUMENT_EXTENSIONS = PLAIN_TEXT_EXTENSIONS.union(DOCUMENT_EXTENSIONS)

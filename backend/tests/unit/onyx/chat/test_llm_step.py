@@ -1,8 +1,12 @@
 """Tests for llm_step.py, specifically sanitization and argument parsing."""
 
+import base64
+import os
+from io import BytesIO
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from onyx.chat.llm_step import _extract_tool_call_kickoffs
 from onyx.chat.llm_step import _increment_turns
@@ -11,9 +15,11 @@ from onyx.chat.llm_step import _resolve_tool_arguments
 from onyx.chat.llm_step import _XmlToolCallContentFilter
 from onyx.chat.llm_step import extract_tool_calls_from_response_text
 from onyx.chat.llm_step import translate_history_to_llm_format
+from onyx.chat.models import ChatLoadedFile
 from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import ToolCallSimple
 from onyx.configs.constants import MessageType
+from onyx.file_store.models import ChatFileType
 from onyx.llm.constants import LlmProviderNames
 from onyx.llm.interfaces import LLMConfig
 from onyx.llm.models import AssistantMessage
@@ -547,3 +553,124 @@ class TestTranslateHistoryToLlmFormat:
                 ],
                 llm_config=self._llm_config(provider),
             )
+
+
+def _make_png(width: int, height: int, noisy: bool = False) -> bytes:
+    """Create a PNG image of the given dimensions, returning raw bytes.
+
+    When *noisy* is True the pixels are random, which defeats PNG compression
+    and produces a file whose size is roughly proportional to width * height * 3.
+    """
+    if noisy:
+        img = Image.frombytes(
+            "RGB", (width, height), os.urandom(width * height * 3)
+        )
+    else:
+        img = Image.new("RGB", (width, height), color=(255, 0, 0))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestTranslateHistoryImageResize:
+    """Tests that the image resize guard in translate_history_to_llm_format works."""
+
+    @staticmethod
+    def _llm_config(provider: str = "anthropic") -> LLMConfig:
+        return LLMConfig(
+            model_provider=provider,
+            model_name="test-model",
+            temperature=0,
+            max_input_tokens=8192,
+        )
+
+    @staticmethod
+    def _user_msg_with_image(image_bytes: bytes) -> ChatMessageSimple:
+        return ChatMessageSimple(
+            message="Look at this image",
+            token_count=10,
+            message_type=MessageType.USER,
+            image_files=[
+                ChatLoadedFile(
+                    file_id="img-001",
+                    content=image_bytes,
+                    file_type=ChatFileType.IMAGE,
+                    filename="test.png",
+                    content_text=None,
+                    token_count=0,
+                )
+            ],
+        )
+
+    def test_oversized_image_is_resized_under_anthropic_limit(self) -> None:
+        """An image exceeding the Anthropic 5 MB limit is resized to fit."""
+        # Create a large noisy image — random pixels defeat PNG compression,
+        # producing a file well above the Anthropic raw-bytes threshold
+        # (5 MB * 3/4 * 0.95 ~ 3.5 MB).
+        large_png = _make_png(1200, 1200, noisy=True)
+        assert len(large_png) > 3_500_000, "Test image must be large enough to trigger resize"
+
+        history = [self._user_msg_with_image(large_png)]
+        messages = translate_history_to_llm_format(
+            history=history,
+            llm_config=self._llm_config("anthropic"),
+        )
+
+        assert len(messages) == 1
+        msg = messages[0]
+        assert isinstance(msg, UserMessage)
+        # Content should be a list with text + image parts
+        assert isinstance(msg.content, list)
+        assert len(msg.content) == 2
+
+        image_part = msg.content[1]
+        # Extract the base64 data from the data URL
+        url: str = image_part.image_url.url  # type: ignore[union-attr]
+        assert url.startswith("data:")
+        b64_payload = url.split(",", 1)[1]
+        decoded = base64.b64decode(b64_payload)
+        # The resized image must be under the Anthropic 5 MB base64 limit
+        assert len(b64_payload) <= 5 * 1024 * 1024
+        # And must be valid image bytes (non-empty)
+        assert len(decoded) > 0
+
+    def test_small_image_passes_through_unchanged(self) -> None:
+        """A small image that fits within limits is not modified."""
+        small_png = _make_png(100, 100)
+        history = [self._user_msg_with_image(small_png)]
+        messages = translate_history_to_llm_format(
+            history=history,
+            llm_config=self._llm_config("anthropic"),
+        )
+
+        assert len(messages) == 1
+        msg = messages[0]
+        assert isinstance(msg, UserMessage)
+        assert isinstance(msg.content, list)
+
+        image_part = msg.content[1]
+        url: str = image_part.image_url.url  # type: ignore[union-attr]
+        b64_payload = url.split(",", 1)[1]
+        decoded = base64.b64decode(b64_payload)
+        # The original bytes should pass through identically
+        assert decoded == small_png
+
+    def test_no_images_unaffected(self) -> None:
+        """Messages without images are translated normally (regression guard)."""
+        history = [
+            ChatMessageSimple(
+                message="Just text, no images",
+                token_count=5,
+                message_type=MessageType.USER,
+            )
+        ]
+        messages = translate_history_to_llm_format(
+            history=history,
+            llm_config=self._llm_config("anthropic"),
+        )
+
+        assert len(messages) == 1
+        msg = messages[0]
+        assert isinstance(msg, UserMessage)
+        # Simple text message: content is a plain string, not a list
+        assert msg.content == "Just text, no images"

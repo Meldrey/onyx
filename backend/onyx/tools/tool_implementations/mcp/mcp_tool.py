@@ -1,4 +1,6 @@
+import base64
 import json
+import re
 from typing import Any
 
 from mcp.client.auth import OAuthClientProvider
@@ -19,6 +21,51 @@ from onyx.tools.tool_implementations.mcp.mcp_client import call_mcp_tool
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
+
+_ONYX_FILE_RE = re.compile(r"onyx-file://([0-9a-fA-F-]+)")
+
+
+def _resolve_onyx_file_references(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Replace ``onyx-file://<file_id>`` references in string values with
+    base64 data URIs so that MCP tools (e.g. image-editing APIs) can consume
+    user-uploaded images directly."""
+    from onyx.file_store.file_store import get_default_file_store
+
+    resolved: dict[str, Any] = {}
+    file_store = None
+
+    for key, value in kwargs.items():
+        if not isinstance(value, str) or "onyx-file://" not in value:
+            resolved[key] = value
+            continue
+
+        match = _ONYX_FILE_RE.search(value)
+        if not match:
+            resolved[key] = value
+            continue
+
+        file_id = match.group(1)
+        try:
+            if file_store is None:
+                file_store = get_default_file_store()
+            file_record = file_store.read_file_record(file_id)
+            file_io = file_store.read_file(file_id, mode="b")
+            file_bytes = file_io.read()
+            media_type = file_record.file_type or "application/octet-stream"
+            b64 = base64.b64encode(file_bytes).decode()
+            data_uri = f"data:{media_type};base64,{b64}"
+            resolved[key] = _ONYX_FILE_RE.sub(data_uri, value, count=1)
+            logger.info(
+                "Resolved onyx-file://%s to base64 data URI (%d bytes) for param '%s'",
+                file_id,
+                len(file_bytes),
+                key,
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve onyx-file://%s: %s", file_id, e)
+            resolved[key] = value
+
+    return resolved
 
 # Headers that cannot be overridden by user requests to prevent security issues
 # Host header is particularly critical - it can be used for Host Header Injection attacks
@@ -231,10 +278,14 @@ class MCPTool(Tool[None]):
                         None,
                     )
 
+            # Resolve onyx-file:// references to base64 data URIs so MCP
+            # tools can consume user-uploaded images (e.g. for image editing).
+            resolved_kwargs = _resolve_onyx_file_references(llm_kwargs)
+
             tool_result = call_mcp_tool(
                 self.mcp_server.server_url,
                 self._name,
-                llm_kwargs,
+                resolved_kwargs,
                 connection_headers=headers,
                 transport=self.mcp_server.transport or MCPTransport.STREAMABLE_HTTP,
                 auth=auth,

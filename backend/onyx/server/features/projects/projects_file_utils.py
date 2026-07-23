@@ -22,6 +22,8 @@ from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
 UNKNOWN_FILENAME = "[unknown_file]"  # More descriptive than empty string
+# ~3.75 MB raw bytes → ~5 MB base64 (Anthropic's limit)
+_OVERSIZED_IMAGE_BYTES = int(3.75 * 1024 * 1024)
 
 
 def get_safe_filename(upload: UploadFile) -> str:
@@ -222,6 +224,16 @@ def categorize_uploaded_files(
                         )
                     )
                     continue
+
+                image_size_bytes = get_upload_size_bytes(upload)
+                if (
+                    image_size_bytes is not None
+                    and image_size_bytes > _OVERSIZED_IMAGE_BYTES
+                ):
+                    size_mb = image_size_bytes / (1024 * 1024)
+                    logger.warning(
+                        f"Image '{filename}' is {size_mb:.1f} MB — will be auto-resized for providers with smaller limits"
+                    )
 
                 if token_threshold is not None and token_count > token_threshold:
                     results.rejected.append(

@@ -66,7 +66,28 @@ class ImageContentPart(BaseModel):
     image_url: ImageUrlDetail
 
 
-ContentPart = TextContentPart | ImageContentPart
+class DocumentSource(BaseModel):
+    """Source descriptor for a base64-encoded document (e.g. PDF)."""
+
+    type: Literal["base64"] = "base64"
+    media_type: str
+    data: str
+
+
+class DocumentContentPart(BaseModel):
+    """Native document content block (Anthropic PDF support).
+
+    LiteLLM passes this through to the Anthropic API as a ``type: "document"``
+    content block, allowing Claude to process PDFs natively instead of relying
+    on text extraction.
+    """
+
+    type: Literal["document"] = "document"
+    source: DocumentSource
+    cache_control: dict | None = None
+
+
+ContentPart = TextContentPart | ImageContentPart | DocumentContentPart
 
 
 # Tool call structures
@@ -108,7 +129,7 @@ class AssistantMessage(CacheableMessage):
 
 class ToolMessage(CacheableMessage):
     role: Literal["tool"] = "tool"
-    content: str
+    content: str | list[dict]
     tool_call_id: str
 
 

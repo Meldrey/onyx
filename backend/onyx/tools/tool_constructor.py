@@ -397,10 +397,16 @@ def construct_tools(
             # Find the specific tool that this database entry represents
             expected_tool_name = db_tool_model.display_name
 
-            # Extract additional MCP headers from config
-            additional_mcp_headers = None
+            # Build MCP headers: start with persona/user identity, then
+            # layer on any per-request overrides from the chat config.
+            # Identity headers enable per-agent + per-user tenant isolation
+            # on MCP servers that support it (e.g. johnny5-memory).
+            additional_mcp_headers: dict[str, str] = {
+                "X-Agent-Id": persona.name.lower().replace(" ", "-"),
+                "X-User-Id": user_email,
+            }
             if custom_tool_config and custom_tool_config.mcp_headers:
-                additional_mcp_headers = custom_tool_config.mcp_headers
+                additional_mcp_headers.update(custom_tool_config.mcp_headers)
 
             mcp_tool_cache[db_tool_model.mcp_server_id] = {}
             # Find the matching tool definition

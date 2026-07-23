@@ -121,10 +121,23 @@ class MCPToolCreateRequest(BaseModel):
                 raise ValueError(
                     "auth_template is required when auth_performer is 'per_user'"
                 )
-            if not self.admin_credentials:
-                raise ValueError(
-                    "admin_credentials is required when auth_performer is 'per_user'"
+            # admin_credentials required only when template has custom placeholders
+            # Built-in placeholders ({user_email}) and literal values work without credentials
+            BUILTIN_PLACEHOLDERS = {"{user_email}"}
+            if self.auth_template and self.auth_template.headers:
+                def has_custom_placeholders(v: str) -> bool:
+                    # Strip built-in placeholders, then check for remaining {
+                    stripped = v
+                    for bp in BUILTIN_PLACEHOLDERS:
+                        stripped = stripped.replace(bp, "")
+                    return "{" in stripped
+                has_placeholders = any(
+                    has_custom_placeholders(v) for v in self.auth_template.headers.values()
                 )
+                if has_placeholders and not self.admin_credentials:
+                    raise ValueError(
+                        "admin_credentials is required when auth_template contains placeholders"
+                    )
 
         # OAuth client ID/secret are optional. If provided, they will seed the
         # OAuth client info; otherwise, the MCP client will attempt dynamic

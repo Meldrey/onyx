@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 import time
@@ -13,6 +14,8 @@ from typing import cast
 from onyx.chat.chat_state import ChatStateContainer
 from onyx.chat.citation_processor import DynamicCitationProcessor
 from onyx.chat.emitter import Emitter
+from onyx.chat.image_utils import get_provider_image_limit
+from onyx.chat.image_utils import resize_image_for_chat
 from onyx.chat.models import ChatMessageSimple
 from onyx.chat.models import LlmStepResult
 from onyx.chat.tool_call_args_streaming import maybe_emit_argument_delta
@@ -31,6 +34,8 @@ from onyx.llm.model_response import Delta
 from onyx.llm.models import AssistantMessage
 from onyx.llm.models import ChatCompletionMessage
 from onyx.llm.models import FunctionCall
+from onyx.llm.models import DocumentContentPart
+from onyx.llm.models import DocumentSource
 from onyx.llm.models import ImageContentPart
 from onyx.llm.models import ImageUrlDetail
 from onyx.llm.models import ReasoningEffort
@@ -285,6 +290,11 @@ def _format_message_history_for_logging(
                     elif isinstance(part, ImageContentPart):
                         url = part.image_url.url
                         formatted_lines.append(f"[Image: {url[:50]}...]")
+                    elif isinstance(part, DocumentContentPart):
+                        formatted_lines.append(
+                            f"[Document: {part.source.media_type}, "
+                            f"{len(part.source.data)} base64 chars]"
+                        )
 
         elif isinstance(msg, AssistantMessage):
             formatted_lines.append(f"Message {i + 1} [assistant]:")
@@ -698,6 +708,28 @@ def _build_structured_tool_response_message(msg: ChatMessageSimple) -> ToolMessa
             f"Tool call response message encountered but tool_call_id is not available. Message: {msg}"
         )
 
+    # If the tool result contains image_files, build content blocks
+    # so the model can see images returned by tools (e.g. Grok Imagine)
+    if msg.image_files:
+        content_blocks: list[dict] = [{"type": "text", "text": msg.message}]
+        for img_file in msg.image_files:
+            if img_file.file_type.value == "image":
+                try:
+                    resized = resize_image_for_chat(img_file.content, 1_000_000)
+                    image_type = get_image_type_from_bytes(resized)
+                    b64 = base64.b64encode(resized).decode()
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": f"data:{image_type};base64,{b64}",
+                    })
+                except Exception:
+                    pass  # Graceful fallback - skip image if encoding fails
+        return ToolMessage(
+            role="tool",
+            content=content_blocks,
+            tool_call_id=msg.tool_call_id,
+        )
+
     return ToolMessage(
         role="tool",
         content=msg.message,
@@ -768,6 +800,28 @@ def _get_history_message_formatter(llm_config: LLMConfig) -> _HistoryMessageForm
     return _DEFAULT_HISTORY_MESSAGE_FORMATTER
 
 
+# Providers that support Anthropic-style native PDF document blocks.
+# Bedrock and Vertex AI also support Claude models with PDF capability.
+_NATIVE_PDF_PROVIDERS = {
+    LlmProviderNames.ANTHROPIC,
+    LlmProviderNames.BEDROCK,
+    LlmProviderNames.BEDROCK_CONVERSE,
+    LlmProviderNames.VERTEX_AI,
+}
+
+
+def _provider_supports_native_pdf(llm_config: LLMConfig) -> bool:
+    """Check if the configured provider supports native PDF document blocks.
+
+    Native PDF support requires both a supporting provider (Anthropic, Bedrock,
+    Vertex AI) AND a Claude model (since other models on these platforms may
+    not support document blocks).
+    """
+    if llm_config.model_provider in _NATIVE_PDF_PROVIDERS:
+        return "claude" in llm_config.model_name.lower()
+    return False
+
+
 def translate_history_to_llm_format(
     history: list[ChatMessageSimple],
     llm_config: LLMConfig,
@@ -808,36 +862,119 @@ def translate_history_to_llm_format(
             messages.append(system_msg)
 
         elif msg.message_type == MessageType.USER:
-            # Handle user messages with potential images
-            if msg.image_files:
-                # Build content parts: text + images
-                content_parts: list[TextContentPart | ImageContentPart] = [
+            # Handle user messages with potential images or documents
+            has_multimodal = msg.image_files or msg.document_files
+            if has_multimodal:
+                # Build content parts: text + images + documents
+                content_parts: list[
+                    TextContentPart | ImageContentPart | DocumentContentPart
+                ] = [
                     TextContentPart(
                         type="text",
                         text=msg.message,
                     )
                 ]
 
-                # Add image parts
-                for img_file in msg.image_files:
-                    if img_file.file_type == ChatFileType.IMAGE:
-                        try:
-                            image_type = get_image_type_from_bytes(img_file.content)
-                            base64_data = img_file.to_base64()
-                            image_url = f"data:{image_type};base64,{base64_data}"
+                # Add image parts and track file references for tool use
+                image_file_refs: list[tuple[str, str]] = []
+                if msg.image_files:
+                    for img_file in msg.image_files:
+                        if img_file.file_type == ChatFileType.IMAGE:
+                            try:
+                                max_b64 = get_provider_image_limit(
+                                    llm_config.model_provider
+                                )
+                                resized_data = resize_image_for_chat(
+                                    img_file.content, max_b64
+                                )
+                                if resized_data is not img_file.content:
+                                    logger.info(
+                                        "Resized image %s from %d to %d bytes for provider %s",
+                                        img_file.file_id,
+                                        len(img_file.content),
+                                        len(resized_data),
+                                        llm_config.model_provider,
+                                    )
+                                image_type = get_image_type_from_bytes(resized_data)
+                                base64_data = base64.b64encode(resized_data).decode()
+                                image_url = f"data:{image_type};base64,{base64_data}"
 
-                            image_part = ImageContentPart(
-                                type="image_url",
-                                image_url=ImageUrlDetail(
-                                    url=image_url,
-                                    detail=None,
-                                ),
-                            )
-                            content_parts.append(image_part)
+                                image_part = ImageContentPart(
+                                    type="image_url",
+                                    image_url=ImageUrlDetail(
+                                        url=image_url,
+                                        detail=None,
+                                    ),
+                                )
+                                content_parts.append(image_part)
+                                image_file_refs.append(
+                                    (img_file.filename or "image", img_file.file_id)
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to process image file {img_file.file_id}: {e}. Skipping image."
+                                )
+
+                # Add document parts (native PDF blocks for supporting providers)
+                if msg.document_files:
+                    _supports_native = _provider_supports_native_pdf(llm_config)
+                    for doc_file in msg.document_files:
+                        try:
+                            if _supports_native:
+                                b64 = base64.b64encode(doc_file.content).decode()
+                                content_parts.append(
+                                    DocumentContentPart(
+                                        type="document",
+                                        source=DocumentSource(
+                                            type="base64",
+                                            media_type="application/pdf",
+                                            data=b64,
+                                        ),
+                                    )
+                                )
+                                logger.info(
+                                    "Sending PDF %s (%d bytes) as native document block",
+                                    doc_file.filename or doc_file.file_id,
+                                    len(doc_file.content),
+                                )
+                            elif doc_file.content_text:
+                                # Fallback: inject extracted text for
+                                # providers without native PDF support
+                                content_parts.append(
+                                    TextContentPart(
+                                        type="text",
+                                        text=f"File: {doc_file.filename or 'document.pdf'}\n{doc_file.content_text}\nEnd of File",
+                                    )
+                                )
+                            else:
+                                logger.warning(
+                                    "PDF %s has no extracted text and provider %s does not support native PDFs. Skipping.",
+                                    doc_file.file_id,
+                                    llm_config.model_provider,
+                                )
                         except Exception as e:
                             logger.warning(
-                                f"Failed to process image file {img_file.file_id}: {e}. Skipping image."
+                                f"Failed to process document file {doc_file.file_id}: {e}. Skipping."
                             )
+
+                # Append file references so the LLM can use them in tool parameters
+                if image_file_refs:
+                    ref_lines = [
+                        f'- "{name}": onyx-file://{fid}'
+                        for name, fid in image_file_refs
+                    ]
+                    content_parts.append(
+                        TextContentPart(
+                            type="text",
+                            text=(
+                                "[Uploaded images — to reference in tool parameters "
+                                "(e.g. image_url), use these URIs:\n"
+                                + "\n".join(ref_lines)
+                                + "]"
+                            ),
+                        )
+                    )
+
                 user_msg = UserMessage(
                     role="user",
                     content=content_parts,
